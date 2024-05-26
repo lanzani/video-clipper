@@ -1,8 +1,9 @@
 import multiprocessing
-
+import cv2
 import streamlit as st
 import os
 from moviepy.editor import VideoFileClip
+import numpy as np
 
 input_video_folder = "raw_videos"
 output_video_folder = "output_videos"
@@ -13,7 +14,6 @@ def display_video_info(clip, target_duration, number_of_video_files):
     # If all the video files have been processed, show baloons
     if st.session_state.video_id == number_of_video_files:
         st.balloons()
-
 
     # Add a progress bar in the sidebar representing the number of processed videos
     st.sidebar.progress(st.session_state.video_id / number_of_video_files)
@@ -30,12 +30,24 @@ def display_video_info(clip, target_duration, number_of_video_files):
     st.sidebar.write(f"Length: {target_duration}")
 
 
-def process_video(video_path, start_time, end_time, video_id, action):
+def process_video(video_path, start_time, end_time, video_id, action, save_with_mask, rectangle_coordinates):
     # Load the video
     clip = VideoFileClip(video_path)
 
     # Clip the video based on the start and end time
     subclip = clip.subclip(start_time, end_time)
+
+    # If the toggle is checked, apply the mask to the video
+    if save_with_mask:
+        # Create a mask of the same size as the video frames
+        mask = np.ones((clip.size[1], clip.size[0]), dtype=np.uint8) * 255
+
+        # Set the pixels inside the rectangle to black
+        top_left, bottom_right = rectangle_coordinates
+        mask[top_left[1]:bottom_right[1], top_left[0]:bottom_right[0]] = 0
+
+        # Apply the mask to each frame of the video
+        subclip = subclip.fl_image(lambda image: cv2.bitwise_and(image, image, mask=mask))
 
     # Create the output folder if it doesn't exist
     output_folder = os.path.join(output_video_folder, f"{target_fps}fps", action)
@@ -81,17 +93,39 @@ def main():
     start_time, end_time = range_slider
 
     # Display the clipped video with autoplay
-    st.video(video_path, start_time=start_time, end_time=end_time, format="video/mp4", autoplay=True, loop=True, muted=True)
+    st.video(video_path, start_time=start_time, end_time=end_time, format="video/mp4", autoplay=True, loop=True,
+             muted=True)
 
+    # Get the first frame of the video
+    first_frame = clip.get_frame(0)  # 0 indicates the start of the video
+
+    # Convert the frame to RGB format
+    first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+
+    # Add sliders to specify the top-left and bottom-right coordinates of the rectangle
+    top_x, bottom_x = st.slider('Top-left coordinate (x, y)', 0, clip.size[0], (0, 0))
+    top_y, bottom_y = st.slider('Bottom-right coordinate (x, y)', 0, clip.size[1], (0, 0))
+
+    # Draw a rectangle on the first frame
+    cv2.rectangle(first_frame_rgb, (top_x, top_y), (bottom_x, bottom_y), (255, 0, 0),
+                  2)  # The rectangle is drawn in red color
+
+    # Display the first frame with the rectangle
+    st.image(first_frame_rgb[..., ::-1], caption='First frame of the video', use_column_width=True)
     display_video_info(clip, range_slider[1] - range_slider[0], len(video_files))
 
     # Add a radio button in the sidebar for action selection
     action = st.sidebar.radio('Select action', ['fall', 'slow_fall', 'sit', 'walk', 'lay'])
 
+    # Add a toggle in the sidebar to save the video with the mask
+    save_with_mask = st.sidebar.checkbox('Save with mask')
+
     # Create a button to save the video
-    if st.button('Save Video'):
+    if st.sidebar.button('Save Video'):
         # Process the current video in a separate process
-        process = multiprocessing.Process(target=process_video, args=(video_path, start_time, end_time, st.session_state.video_id, action))
+        process = multiprocessing.Process(target=process_video, args=(
+            video_path, start_time, end_time, st.session_state.video_id, action, save_with_mask,
+            ((top_x, top_y), (bottom_x, bottom_y))))
         process.start()
 
         st.session_state.video_id += 1

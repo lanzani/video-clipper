@@ -12,6 +12,7 @@ streamlit = "^1.35.0"
 moviepy = "^1.0.3"
 numpy = "^1.26.4"
 pillow = "^10.3.0"
+streamlit-drawable-canvas = "^0.9.3"
 
 
 [build-system]
