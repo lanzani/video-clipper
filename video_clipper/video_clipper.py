@@ -65,4 +65,4 @@ def split_on_black_frames(video_filename, output_fps=15.0):
 
 
 # Use the function
-split_on_black_frames('test2.mp4', output_fps=15.0)
+split_on_black_frames('test4.mp4', output_fps=15.0)

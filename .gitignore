@@ -312,3 +312,5 @@ pyrightconfig.json
 video_clipper/output/*.mp4
 *.mp4
 *.rar
+/processed_dataset/
+/raw_dataset/
