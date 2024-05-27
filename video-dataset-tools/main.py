@@ -1,3 +1,4 @@
+from datetime import datetime
 import multiprocessing
 import shutil
 
@@ -9,82 +10,126 @@ from PIL import Image
 from moviepy.editor import VideoFileClip
 import numpy as np
 from streamlit_drawable_canvas import st_canvas
-import pandas as pd
+from loguru import logger
+from dotenv import load_dotenv
 
-input_video_folder = "raw_videos"
-output_video_folder = "output_videos"
+# Load the .env file
+load_dotenv()
+
+# Get the author variable
+author = os.getenv('AUTHOR')
+author = author.lower() if author is not None else None
+
+input_video_folder = "video_to_process"
+output_video_folder = f"{author}_processed_videos"
 skipped_folder = "skipped"
 target_fps = 15
 
 
+def increment_video_index(video_files):
+    st.session_state.video_id += 1
+    st.session_state.video_index = (st.session_state.video_index + 1) % video_files
+
+
+def decrement_video_index():
+    st.session_state.video_id = max(0, st.session_state.video_id - 1)
+    st.session_state.video_index = max(0, st.session_state.video_index - 1)
+
+
+def handle_save_video(main_col, col, video_path, start_time, end_time, video_files, boxes):
+    col1, col2 = main_col.columns(2)
+
+    prefix = col2.text_input('Prefix', value=author)
+
+    action = col1.radio('Select action', ['fall', 'slow_fall', 'sit', 'walk', 'lay'])
+    save_with_mask = col2.checkbox('Save with mask')
+
+    if col.button('Save Video ✅', type='primary'):
+        process = multiprocessing.Process(target=process_video, args=(
+            video_path, start_time, end_time, action, save_with_mask, boxes, prefix))
+        process.start()
+
+        increment_video_index(len(video_files))
+        st.experimental_rerun()
+
+
+def handle_skip_video(col, video_path, video_files):
+    if col.button('Skip Video ❌'):
+        os.makedirs(skipped_folder, exist_ok=True)
+        shutil.copy(video_path, os.path.join(skipped_folder, f"{st.session_state.video_id}.mp4"))
+
+        increment_video_index(len(video_files))
+        st.experimental_rerun()
+
+
+def handle_previous_video(col):
+    if col.button('⏪ Previous Video'):
+        decrement_video_index()
+        st.experimental_rerun()
+
+
+def handle_next_video(col, number_of_video_files):
+    if col.button('Next Video ⏩'):
+        increment_video_index(number_of_video_files)
+        st.experimental_rerun()
+
+
+def archive_videos():
+    # Get the current date and time
+    now = datetime.now()
+
+    # Format the date and time into a string
+    datetime_str = now.strftime("%Y-%m-%d_%H-%M")
+
+    # Create the archive/{datetime} directory
+    archive_dir = os.path.join("archive", datetime_str)
+    os.makedirs(archive_dir, exist_ok=True)
+
+    # Get a list of all files in the video_to_process directory
+    video_files = os.listdir(input_video_folder)
+
+    # For each file in the video_to_process directory
+    for idx, video_file in enumerate(video_files):
+        logger.info(f"Archiving {video_file} ({idx + 1}/{len(video_files)})")
+        # Construct the full file paths
+        src_file = os.path.join(input_video_folder, video_file)
+        dst_file = os.path.join(archive_dir, video_file)
+
+        # Copy the file to the archive/{datetime} directory
+        shutil.copy2(src_file, dst_file)
+
+    logger.success("All videos have been archived.")
+
+
 def display_video_info(target_duration, number_of_video_files, video_path, start_time, end_time, video_files, boxes):
+    main_col = st.sidebar.container()
+
     # If all the video files have been processed, show balloons
     if st.session_state.video_id == number_of_video_files:
         st.balloons()
 
-    # Display video information in the sidebar
-    # st.sidebar.title("Source Video Information")
-    # st.sidebar.write(f"Resolution: {clip.size[0]}x{clip.size[1]}")
-    # st.sidebar.write(f"Framerate: {clip.fps}")
-    # st.sidebar.write(f"Length: {clip.duration}")
+        if st.sidebar.button("Archive Videos"):
+            logger.warning("Archiving videos. Do not close the browser or refresh the page.")
+            process = multiprocessing.Process(target=archive_videos)
+            process.start()
 
-    st.sidebar.title("Target Video Information")
-    st.sidebar.write(f"Framerate: {target_fps}")
-    st.sidebar.metric(label="Length", value=f"{target_duration} sec")
+    main_col.title("Target Video Information")
+    col1, col2 = main_col.columns(2)
+    col1.metric(label="Framerate", value=f"{target_fps} fps")
+    col2.metric(label="Length", value=f"{target_duration} sec")
 
-    prefix = st.sidebar.text_input('Prefix', value='')
-
-    # Add a radio button in the sidebar for action selection
-    action = st.sidebar.radio('Select action', ['fall', 'slow_fall', 'sit', 'walk', 'lay'])
-
-    # Add a toggle in the sidebar to save the video with the mask
-    save_with_mask = st.sidebar.toggle('Save with mask')
-
-    # Create two columns for the buttons
     col1, col2 = st.sidebar.columns(2)
 
-    # Create a button to save the video
-    if col1.button('Save Video ✅', type='primary'):
-        # Process the current video in a separate process
-        process = multiprocessing.Process(target=process_video, args=(
-            video_path, start_time, end_time, st.session_state.video_id, action, save_with_mask, boxes, prefix))
-        process.start()
+    handle_save_video(main_col, col1, video_path, start_time, end_time, video_files, boxes)
+    handle_skip_video(col2, video_path, video_files)
+    main_col.progress(st.session_state.video_id / number_of_video_files)
+    main_col.write(f"{st.session_state.video_id}/{number_of_video_files} video processed")
 
-        st.session_state.video_id += 1
-        st.session_state.video_index = (st.session_state.video_index + 1) % len(video_files)
-        st.experimental_rerun()
-
-    # Add a button to skip the video
-    if col2.button('Skip Video ❌'):
-        # Save the current video to a separate folder without clipping it
-        os.makedirs(skipped_folder, exist_ok=True)
-        shutil.copy(video_path, os.path.join(skipped_folder, f"{st.session_state.video_id}.mp4"))
-
-        st.session_state.video_id += 1
-        st.session_state.video_index = (st.session_state.video_index + 1) % len(video_files)
-        st.experimental_rerun()
-
-    # Add a progress bar in the sidebar representing the number of processed videos
-    st.sidebar.progress(st.session_state.video_id / number_of_video_files)
-    st.sidebar.write(f"{st.session_state.video_id}/{number_of_video_files} video processed")
-
-    # Create two columns for the navigation buttons
-    col1, col2 = st.sidebar.columns(2)
-
-    # Add a button to go to the previous video
-    if col1.button('⏪ Previous Video'):
-        st.session_state.video_id = max(0, st.session_state.video_id - 1)
-        st.session_state.video_index = max(0, st.session_state.video_index - 1)
-        st.experimental_rerun()
-
-    # Add a button to go to the next video
-    if col2.button('Next Video ⏩'):
-        st.session_state.video_id = min(number_of_video_files - 1, st.session_state.video_id + 1)
-        st.session_state.video_index = min(len(video_files) - 1, st.session_state.video_index + 1)
-        st.experimental_rerun()
+    handle_previous_video(col1)
+    handle_next_video(col2, number_of_video_files)
 
 
-def process_video(video_path, start_time, end_time, video_id, action, save_with_mask, boxes, prefix):
+def process_video(video_path, start_time, end_time, action, save_with_mask, boxes, prefix):
     # Load the video
     clip = VideoFileClip(video_path)
 
@@ -108,12 +153,23 @@ def process_video(video_path, start_time, end_time, video_id, action, save_with_
     output_folder = os.path.join(output_video_folder, f"{target_fps}fps", action)
     os.makedirs(output_folder, exist_ok=True)
 
+    # Get the number of files in the subdirectory
+    files = os.listdir(output_folder)
+    video_id = len(files)
+
     # Generate the filename based on the prefix and video id
-    filename = f"{prefix}_{video_id}.mp4" if prefix else f"{video_id}.mp4"
+    filename = f"{prefix}_{action}_{video_id}.mp4" if prefix else f"{action}_{video_id}.mp4"
 
     # Write the clipped video to the output folder with a progressive id
     output_path = os.path.join(output_folder, filename)
-    subclip.write_videofile(output_path, fps=target_fps)
+
+    # Check if the file already exists
+    if os.path.exists(output_path):
+        st.error(f"Video {output_path} already exists. Not overwriting.")
+        logger.error(f"Video {output_path} already exists. Not overwriting.")
+        return
+
+    subclip.without_audio().write_videofile(output_path, fps=target_fps)
 
     # Close the video clips to free up memory
     subclip.close()
@@ -148,25 +204,6 @@ def draw_masks(first_frame, width, height):
 
                 bboxes.append((top_x, top_y, bottom_x, bottom_y))
 
-    # objects = pd.json_normalize(canvas_result.json_data["objects"])  # need to convert obj to str because PyArrow
-    # for col in objects.select_dtypes(include=['object']).columns:
-    #     objects[col] = objects[col].astype("str")
-    # st.dataframe(objects)
-
-    # # Convert the frame to RGB format
-    # first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-    #
-    # # Add sliders to specify the top-left and bottom-right coordinates of the rectangle
-    # top_x, bottom_x = st.slider('Top-left coordinate (x, y)', 0, width, (0, 0))
-    # top_y, bottom_y = st.slider('Bottom-right coordinate (x, y)', 0, height, (0, 0))
-    #
-    # # Draw a rectangle on the first frame
-    # cv2.rectangle(first_frame_rgb, (top_x, top_y), (bottom_x, bottom_y), (255, 0, 0),
-    #               2)  # The rectangle is drawn in red color
-    #
-    # # Display the first frame with the rectangle
-    # st.image(first_frame_rgb[..., ::-1], caption='First frame of the video', use_column_width=True)
-
     return bboxes
 
 
@@ -175,7 +212,7 @@ def main():
     files = os.listdir(input_video_folder)
 
     # Filter out the video files
-    video_files = [file for file in files if file.endswith(('.mp4', '.flv', '.avi'))]
+    video_files = [file for file in files if file.endswith(('.mp4', '.avi'))]
 
     # Create a session state for the video index and video id
     if 'video_index' not in st.session_state:
@@ -187,15 +224,15 @@ def main():
     video_file = video_files[st.session_state.video_index]
     video_path = os.path.join(input_video_folder, video_file)
 
+    # Display the name of the video
+    st.markdown(f"### Video: {video_file}")
+
     # Get the duration of the video
     clip = VideoFileClip(video_path)
     video_duration = int(clip.duration)
 
     # Add a range slider underneath the video
     range_slider = st.slider('Select a range', 0, video_duration, (0, video_duration))
-
-    # Display the length of the range slider
-    # st.write(f"Length (s): {range_slider[1] - range_slider[0]}")
 
     # Clip the video based on the value of the slider
     start_time, end_time = range_slider
@@ -215,5 +252,9 @@ def main():
 
 
 if __name__ == "__main__":
+
     st.title("Video Dataset Tools")
-    main()
+    if author is None or author == '':
+        st.error('Author is not defined. Please define the author variable in .env file.')
+    else:
+        main()
