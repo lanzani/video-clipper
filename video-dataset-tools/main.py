@@ -4,8 +4,12 @@ import shutil
 import cv2
 import streamlit as st
 import os
+
+from PIL import Image
 from moviepy.editor import VideoFileClip
 import numpy as np
+from streamlit_drawable_canvas import st_canvas
+import pandas as pd
 
 input_video_folder = "raw_videos"
 output_video_folder = "output_videos"
@@ -13,8 +17,7 @@ skipped_folder = "skipped"
 target_fps = 15
 
 
-def display_video_info(target_duration, number_of_video_files, video_path, start_time, end_time, video_files,
-                       top_x, top_y, bottom_x, bottom_y):
+def display_video_info(target_duration, number_of_video_files, video_path, start_time, end_time, video_files, boxes):
     # If all the video files have been processed, show balloons
     if st.session_state.video_id == number_of_video_files:
         st.balloons()
@@ -35,7 +38,7 @@ def display_video_info(target_duration, number_of_video_files, video_path, start
     action = st.sidebar.radio('Select action', ['fall', 'slow_fall', 'sit', 'walk', 'lay'])
 
     # Add a toggle in the sidebar to save the video with the mask
-    save_with_mask = st.sidebar.checkbox('Save with mask')
+    save_with_mask = st.sidebar.toggle('Save with mask')
 
     # Create two columns for the buttons
     col1, col2 = st.sidebar.columns(2)
@@ -44,8 +47,7 @@ def display_video_info(target_duration, number_of_video_files, video_path, start
     if col1.button('Save Video ✅', type='primary'):
         # Process the current video in a separate process
         process = multiprocessing.Process(target=process_video, args=(
-            video_path, start_time, end_time, st.session_state.video_id, action, save_with_mask,
-            ((top_x, top_y), (bottom_x, bottom_y)), prefix))
+            video_path, start_time, end_time, st.session_state.video_id, action, save_with_mask, boxes, prefix))
         process.start()
 
         st.session_state.video_id += 1
@@ -53,7 +55,7 @@ def display_video_info(target_duration, number_of_video_files, video_path, start
         st.experimental_rerun()
 
     # Add a button to skip the video
-    if col2.button('Skip Video ⏩'):
+    if col2.button('Skip Video ❌'):
         # Save the current video to a separate folder without clipping it
         os.makedirs(skipped_folder, exist_ok=True)
         shutil.copy(video_path, os.path.join(skipped_folder, f"{st.session_state.video_id}.mp4"))
@@ -66,8 +68,23 @@ def display_video_info(target_duration, number_of_video_files, video_path, start
     st.sidebar.progress(st.session_state.video_id / number_of_video_files)
     st.sidebar.write(f"{st.session_state.video_id}/{number_of_video_files} video processed")
 
+    # Create two columns for the navigation buttons
+    col1, col2 = st.sidebar.columns(2)
 
-def process_video(video_path, start_time, end_time, video_id, action, save_with_mask, rectangle_coordinates, prefix):
+    # Add a button to go to the previous video
+    if col1.button('⏪ Previous Video'):
+        st.session_state.video_id = max(0, st.session_state.video_id - 1)
+        st.session_state.video_index = max(0, st.session_state.video_index - 1)
+        st.experimental_rerun()
+
+    # Add a button to go to the next video
+    if col2.button('Next Video ⏩'):
+        st.session_state.video_id = min(number_of_video_files - 1, st.session_state.video_id + 1)
+        st.session_state.video_index = min(len(video_files) - 1, st.session_state.video_index + 1)
+        st.experimental_rerun()
+
+
+def process_video(video_path, start_time, end_time, video_id, action, save_with_mask, boxes, prefix):
     # Load the video
     clip = VideoFileClip(video_path)
 
@@ -79,12 +96,13 @@ def process_video(video_path, start_time, end_time, video_id, action, save_with_
         # Create a mask of the same size as the video frames
         mask = np.ones((clip.size[1], clip.size[0]), dtype=np.uint8) * 255
 
-        # Set the pixels inside the rectangle to black
-        top_left, bottom_right = rectangle_coordinates
-        mask[top_left[1]:bottom_right[1], top_left[0]:bottom_right[0]] = 0
+        for box in boxes:
+            # Set the pixels inside the rectangle to black
+            top_left_x, top_left_y, bottom_right_x, bottom_right_y = box
+            mask[top_left_y:bottom_right_y, top_left_x:bottom_right_x] = 0
 
-        # Apply the mask to each frame of the video
-        subclip = subclip.fl_image(lambda image: cv2.bitwise_and(image, image, mask=mask))
+            # Apply the mask to each frame of the video
+            subclip = subclip.fl_image(lambda image: cv2.bitwise_and(image, image, mask=mask))
 
     # Create the output folder if it doesn't exist
     output_folder = os.path.join(output_video_folder, f"{target_fps}fps", action)
@@ -100,6 +118,56 @@ def process_video(video_path, start_time, end_time, video_id, action, save_with_
     # Close the video clips to free up memory
     subclip.close()
     clip.close()
+
+
+def draw_masks(first_frame, width, height):
+    # Create a canvas component
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some opacity
+        stroke_width=2,
+        stroke_color="000",
+        background_image=Image.fromarray(first_frame),
+        update_streamlit=True,
+        drawing_mode="rect",
+        point_display_radius=0,
+        key="canvas",
+    )
+
+    bboxes = []
+    if canvas_result.json_data is not None:
+        for rect in canvas_result.json_data["objects"]:
+            if rect["type"] == "rect":
+                top_x, top_y = rect["left"], rect["top"]
+                bottom_x, bottom_y = rect["left"] + rect["width"], rect["top"] + rect["height"]
+
+                # Adapt points to the original image size
+                top_x = int(top_x * width / 600)
+                top_y = int(top_y * height / 400)
+                bottom_x = int(bottom_x * width / 600)
+                bottom_y = int(bottom_y * height / 400)
+
+                bboxes.append((top_x, top_y, bottom_x, bottom_y))
+
+    # objects = pd.json_normalize(canvas_result.json_data["objects"])  # need to convert obj to str because PyArrow
+    # for col in objects.select_dtypes(include=['object']).columns:
+    #     objects[col] = objects[col].astype("str")
+    # st.dataframe(objects)
+
+    # # Convert the frame to RGB format
+    # first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+    #
+    # # Add sliders to specify the top-left and bottom-right coordinates of the rectangle
+    # top_x, bottom_x = st.slider('Top-left coordinate (x, y)', 0, width, (0, 0))
+    # top_y, bottom_y = st.slider('Bottom-right coordinate (x, y)', 0, height, (0, 0))
+    #
+    # # Draw a rectangle on the first frame
+    # cv2.rectangle(first_frame_rgb, (top_x, top_y), (bottom_x, bottom_y), (255, 0, 0),
+    #               2)  # The rectangle is drawn in red color
+    #
+    # # Display the first frame with the rectangle
+    # st.image(first_frame_rgb[..., ::-1], caption='First frame of the video', use_column_width=True)
+
+    return bboxes
 
 
 def main():
@@ -138,24 +206,12 @@ def main():
 
     # Get the first frame of the video
     first_frame = clip.get_frame(0)  # 0 indicates the start of the video
-
-    # Convert the frame to RGB format
-    first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-
-    # Add sliders to specify the top-left and bottom-right coordinates of the rectangle
-    top_x, bottom_x = st.slider('Top-left coordinate (x, y)', 0, clip.size[0], (0, 0))
-    top_y, bottom_y = st.slider('Bottom-right coordinate (x, y)', 0, clip.size[1], (0, 0))
-
-    # Draw a rectangle on the first frame
-    cv2.rectangle(first_frame_rgb, (top_x, top_y), (bottom_x, bottom_y), (255, 0, 0),
-                  2)  # The rectangle is drawn in red color
-
-    # Display the first frame with the rectangle
-    st.image(first_frame_rgb[..., ::-1], caption='First frame of the video', use_column_width=True)
     clip.close()
 
+    boxes = draw_masks(first_frame, clip.size[0], clip.size[1])
+
     display_video_info(range_slider[1] - range_slider[0], len(video_files), video_path, start_time, end_time,
-                       video_files, top_x, top_y, bottom_x, bottom_y)
+                       video_files, boxes)
 
 
 if __name__ == "__main__":
