@@ -105,7 +105,7 @@ def display_video_info(target_duration, number_of_video_files, video_path, start
     main_col = st.sidebar.container()
 
     # If all the video files have been processed, show balloons
-    if st.session_state.video_id == number_of_video_files:
+    if st.session_state.video_id > number_of_video_files:
         st.balloons()
 
         if st.sidebar.button("Archive Videos"):
